@@ -1770,7 +1770,7 @@ class HomeScreen extends StatelessWidget {
     return AnimatedBuilder(
       animation: app,
       builder: (context, _) {
-        final templates = app.templatesFor(FeatureType.hairstyle);
+        final templates = app.templatesFor(app.activeFeature);
         return SafeArea(
           child: _PageFrame(
             child: ListView(
