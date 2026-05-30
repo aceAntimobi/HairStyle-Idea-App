@@ -41,6 +41,30 @@ flutter run \
   --dart-define=SEEDREAM_MODEL=doubao-seedream-4-0-250828
 ```
 
+For no-backend builds, the app also contains an obfuscated Seedream key fallback.
+It is split into encrypted chunks and decoded at runtime, so the raw key is not
+stored in source files. This only raises the extraction cost; it is not equivalent
+to keeping the key on a server.
+
+If Firebase is configured for the app, Remote Config can update public runtime
+controls without releasing a new build:
+
+| Parameter | Type | Purpose |
+| --- | --- | --- |
+| `seedream_enabled` | boolean | Turn real image generation on or off. |
+| `seedream_model` | string | Override the Seedream model. |
+| `seedream_base_url` | string | Override the image generation endpoint. |
+| `daily_free_generation_limit` | number | Initial free quota for non-members. |
+
+Do not put API keys in Firebase Remote Config.
+
+For Android release builds, enable Dart obfuscation and keep split debug symbols
+outside the repository:
+
+```sh
+flutter build apk --release --obfuscate --split-debug-info=build/debug-info
+```
+
 ## Getting Started
 
 This project is a starting point for a Flutter application.

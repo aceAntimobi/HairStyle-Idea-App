@@ -5,6 +5,8 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_remote_config/firebase_remote_config.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -113,6 +115,107 @@ enum GenerationStatus {
   cancelled,
 }
 
+class RuntimeGenerationConfig {
+  const RuntimeGenerationConfig({
+    required this.realImageGenerationEnabled,
+    required this.seedreamBaseUrl,
+    required this.seedreamModel,
+    required this.dailyFreeLimit,
+  });
+
+  static const defaultSeedreamBaseUrl =
+      'https://ark.cn-beijing.volces.com/api/v3/images/generations';
+  static const defaultSeedreamModel = 'doubao-seedream-4-0-250828';
+  static const configuredSeedreamBaseUrl = String.fromEnvironment(
+    'SEEDREAM_BASE_URL',
+    defaultValue: 'https://ark.cn-beijing.volces.com/api/v3/images/generations',
+  );
+  static const configuredSeedreamModel = String.fromEnvironment(
+    'SEEDREAM_MODEL',
+    defaultValue: 'doubao-seedream-4-0-250828',
+  );
+  static const configuredDailyFreeLimit = int.fromEnvironment(
+    'DAILY_FREE_GENERATION_LIMIT',
+    defaultValue: 3,
+  );
+
+  factory RuntimeGenerationConfig.defaults() {
+    return const RuntimeGenerationConfig(
+      realImageGenerationEnabled: true,
+      seedreamBaseUrl: configuredSeedreamBaseUrl,
+      seedreamModel: configuredSeedreamModel,
+      dailyFreeLimit: configuredDailyFreeLimit,
+    );
+  }
+
+  final bool realImageGenerationEnabled;
+  final String seedreamBaseUrl;
+  final String seedreamModel;
+  final int dailyFreeLimit;
+
+  RuntimeGenerationConfig copyWith({
+    bool? realImageGenerationEnabled,
+    String? seedreamBaseUrl,
+    String? seedreamModel,
+    int? dailyFreeLimit,
+  }) {
+    return RuntimeGenerationConfig(
+      realImageGenerationEnabled:
+          realImageGenerationEnabled ?? this.realImageGenerationEnabled,
+      seedreamBaseUrl: seedreamBaseUrl ?? this.seedreamBaseUrl,
+      seedreamModel: seedreamModel ?? this.seedreamModel,
+      dailyFreeLimit: dailyFreeLimit ?? this.dailyFreeLimit,
+    );
+  }
+}
+
+class RuntimeConfigService {
+  const RuntimeConfigService();
+
+  Future<RuntimeGenerationConfig> load() async {
+    final defaults = RuntimeGenerationConfig.defaults();
+    try {
+      await Firebase.initializeApp();
+      final remoteConfig = FirebaseRemoteConfig.instance;
+      await remoteConfig.setDefaults({
+        'seedream_enabled': defaults.realImageGenerationEnabled,
+        'seedream_base_url': defaults.seedreamBaseUrl,
+        'seedream_model': defaults.seedreamModel,
+        'daily_free_generation_limit': defaults.dailyFreeLimit,
+      });
+      await remoteConfig.setConfigSettings(
+        RemoteConfigSettings(
+          fetchTimeout: const Duration(seconds: 4),
+          minimumFetchInterval: kReleaseMode
+              ? const Duration(hours: 1)
+              : const Duration(minutes: 1),
+        ),
+      );
+      await remoteConfig.fetchAndActivate();
+      final remoteLimit = remoteConfig.getInt('daily_free_generation_limit');
+      return defaults.copyWith(
+        realImageGenerationEnabled: remoteConfig.getBool('seedream_enabled'),
+        seedreamBaseUrl: _fallbackString(
+          remoteConfig.getString('seedream_base_url'),
+          defaults.seedreamBaseUrl,
+        ),
+        seedreamModel: _fallbackString(
+          remoteConfig.getString('seedream_model'),
+          defaults.seedreamModel,
+        ),
+        dailyFreeLimit: remoteLimit > 0 ? remoteLimit : defaults.dailyFreeLimit,
+      );
+    } catch (_) {
+      return defaults;
+    }
+  }
+
+  String _fallbackString(String value, String fallback) {
+    final trimmed = value.trim();
+    return trimmed.isEmpty ? fallback : trimmed;
+  }
+}
+
 extension FeatureTypeX on FeatureType {
   String get key => name;
 
@@ -187,6 +290,7 @@ class AppController extends ChangeNotifier {
   final HistoryRepository historyRepository;
   final picker = ImagePicker();
 
+  RuntimeGenerationConfig runtimeConfig = RuntimeGenerationConfig.defaults();
   AssetCatalog? catalog;
   bool initialized = false;
   int tabIndex = 0;
@@ -220,9 +324,18 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> initialize() async {
+    runtimeConfig = await const RuntimeConfigService().load();
     final prefs = await SharedPreferences.getInstance();
     isMember = prefs.getBool('member_enabled') ?? false;
-    remainingFreeGenerations = prefs.getInt('remaining_free_generations') ?? 3;
+    remainingFreeGenerations =
+        prefs.getInt('remaining_free_generations') ??
+        runtimeConfig.dailyFreeLimit;
+    if (!isMember) {
+      remainingFreeGenerations = math.min(
+        remainingFreeGenerations,
+        runtimeConfig.dailyFreeLimit,
+      );
+    }
     catalog = await AssetCatalog.load();
     history = await historyRepository.load();
     final defaultAsset = catalog!.defaultModel;
@@ -382,6 +495,7 @@ class AppController extends ChangeNotifier {
         feature: activeFeature,
         template: template,
         prompt: promptResult,
+        config: runtimeConfig,
       );
       resultBytes = image.bytes;
       resultLocalPath = await historyRepository.saveResultBytes(image.bytes);
@@ -661,6 +775,54 @@ class PromptService {
   }
 }
 
+class ObfuscatedSecrets {
+  static const _seedreamCipherChunks = [
+    [101, 241, 136, 104, 42, 23, 145, 102, 81, 97],
+    [177, 184, 72, 42, 234, 191, 28, 200, 187, 155],
+    [180, 68, 3, 107, 55, 252, 108, 252, 187, 164],
+    [160, 125, 87, 173, 65, 186, 124, 148, 209, 49],
+    [56, 26, 235, 75, 5, 127],
+  ];
+  static const _maskParts = ['hair', 'style', 'idea', 'seed', 'ream', 'v2'];
+  static const _maskYear = '2026';
+
+  static String seedreamApiKey({String environmentKey = ''}) {
+    if (environmentKey.isNotEmpty) {
+      return environmentKey;
+    }
+    return _decode(_seedreamCipherChunks);
+  }
+
+  static String _decode(List<List<int>> chunks) {
+    final cipher = chunks.expand((part) => part).toList(growable: false);
+    final mask = [..._maskParts, _maskYear].join('|');
+    var state = 0x6D2B79F5;
+    for (final unit in mask.codeUnits) {
+      state = _u32((state ^ unit) * 16777619);
+    }
+    final output = <int>[];
+    for (var i = 0; i < cipher.length; i++) {
+      output.add(
+        cipher[i] ^
+            _nextMaskByte(i, () {
+              state = _u32(state + 0x6D2B79F5);
+              return state;
+            }),
+      );
+    }
+    return utf8.decode(output);
+  }
+
+  static int _nextMaskByte(int index, int Function() nextState) {
+    var t = nextState();
+    t = _u32((t ^ (t >> 15)) * (t | 1));
+    t ^= _u32(t + _u32((t ^ (t >> 7)) * (t | 61)));
+    return ((t ^ (t >> 14)) ^ ((index * 31 + 17) & 0xff)) & 0xff;
+  }
+
+  static int _u32(int value) => value & 0xffffffff;
+}
+
 class GeneratedImageResult {
   const GeneratedImageResult({
     required this.bytes,
@@ -673,32 +835,30 @@ class GeneratedImageResult {
 }
 
 class ImageGenerationService {
-  static const apiKey = String.fromEnvironment('SEEDREAM_API_KEY');
-  static const baseUrl = String.fromEnvironment(
-    'SEEDREAM_BASE_URL',
-    defaultValue: 'https://ark.cn-beijing.volces.com/api/v3/images/generations',
-  );
-  static const model = String.fromEnvironment(
-    'SEEDREAM_MODEL',
-    defaultValue: 'doubao-seedream-4-0-250828',
-  );
+  static const environmentApiKey = String.fromEnvironment('SEEDREAM_API_KEY');
 
   Future<GeneratedImageResult> generate({
     required Uint8List sourceBytes,
     required FeatureType feature,
     required StyleTemplate template,
     required PromptResult prompt,
+    required RuntimeGenerationConfig config,
   }) async {
-    if (apiKey.isNotEmpty && baseUrl.isNotEmpty) {
+    final apiKey = ObfuscatedSecrets.seedreamApiKey(
+      environmentKey: environmentApiKey,
+    );
+    if (config.realImageGenerationEnabled &&
+        apiKey.isNotEmpty &&
+        config.seedreamBaseUrl.isNotEmpty) {
       try {
         final response = await http.post(
-          Uri.parse(baseUrl),
+          Uri.parse(config.seedreamBaseUrl),
           headers: {
             'Authorization': 'Bearer $apiKey',
             'Content-Type': 'application/json',
           },
           body: jsonEncode({
-            'model': model,
+            'model': config.seedreamModel,
             'prompt': prompt.prompt,
             'negative_prompt': prompt.negativePrompt,
             'image': base64Encode(sourceBytes),
@@ -1893,11 +2053,11 @@ class ProfileScreen extends StatelessWidget {
                 _SettingsTile(
                   icon: Icons.tune,
                   title: 'AI 接口状态',
-                  subtitle: 'OpenAI-compatible + Seedream，可用 dart-define 配置',
+                  subtitle: 'Remote Config 控制开关，Seedream key 已加固',
                   onTap: () => showInfoDialog(
                     context,
                     'AI 接口状态',
-                    'AI_TEXT_API_KEY / SEEDREAM_API_KEY 未配置时会使用本地 fallback，流程仍可验收。',
+                    'Seedream key 使用分片密文内置，Firebase Remote Config 可控制 seedream_enabled、seedream_model、seedream_base_url 和 daily_free_generation_limit。未配置 Firebase 时使用本地默认值。',
                   ),
                 ),
               ],
