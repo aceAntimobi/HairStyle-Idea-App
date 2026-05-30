@@ -1,11 +1,11 @@
 {
-    "name": "hair_flutter",
-    "short_name": "hair_flutter",
+    "name": "HairStyle Idea",
+    "short_name": "HairStyle",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#FFF2F7",
+    "theme_color": "#FF5FA2",
+    "description": "AI hairstyle and beauty try-on app.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
