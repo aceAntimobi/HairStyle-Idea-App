@@ -674,10 +674,13 @@ class GeneratedImageResult {
 
 class ImageGenerationService {
   static const apiKey = String.fromEnvironment('SEEDREAM_API_KEY');
-  static const baseUrl = String.fromEnvironment('SEEDREAM_BASE_URL');
+  static const baseUrl = String.fromEnvironment(
+    'SEEDREAM_BASE_URL',
+    defaultValue: 'https://ark.cn-beijing.volces.com/api/v3/images/generations',
+  );
   static const model = String.fromEnvironment(
     'SEEDREAM_MODEL',
-    defaultValue: 'seedream',
+    defaultValue: 'doubao-seedream-4-0-250828',
   );
 
   Future<GeneratedImageResult> generate({
@@ -700,7 +703,10 @@ class ImageGenerationService {
             'negative_prompt': prompt.negativePrompt,
             'image': base64Encode(sourceBytes),
             'size': '1024x1024',
+            'sequential_image_generation': 'disabled',
+            'stream': false,
             'response_format': 'b64_json',
+            'watermark': false,
             'metadata': {'feature': feature.key, 'template_id': template.id},
           }),
         );

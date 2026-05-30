@@ -21,6 +21,26 @@ Do not put production API keys into a GitHub Pages build. Static web builds
 expose `dart-define` values to the browser; use a backend proxy for public web
 deployments that need real text generation.
 
+## AI image generation
+
+Image generation uses Ark Seedream through a compile-time API key. The app has
+defaults for the Ark endpoint and Seedream model, so local/mobile builds usually
+only need the key:
+
+```sh
+flutter run \
+  --dart-define=SEEDREAM_API_KEY=your_seedream_key
+```
+
+Optional overrides:
+
+```sh
+flutter run \
+  --dart-define=SEEDREAM_API_KEY=your_seedream_key \
+  --dart-define=SEEDREAM_BASE_URL=https://ark.cn-beijing.volces.com/api/v3/images/generations \
+  --dart-define=SEEDREAM_MODEL=doubao-seedream-4-0-250828
+```
+
 ## Getting Started
 
 This project is a starting point for a Flutter application.
