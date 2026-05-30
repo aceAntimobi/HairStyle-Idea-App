@@ -1,6 +1,25 @@
 # hair_flutter
 
-A new Flutter project.
+Hairstyle and beauty try-on app built with Flutter.
+
+## AI text generation
+
+The prompt optimizer uses an OpenAI-compatible chat completions API. Configure it
+with compile-time values instead of committing keys:
+
+```sh
+flutter run \
+  --dart-define=AI_TEXT_API_KEY=your_api_key \
+  --dart-define=AI_TEXT_BASE_URL=https://api.gptsapi.net/v1 \
+  --dart-define=AI_TEXT_MODEL=gpt-4o-mini
+```
+
+If `AI_TEXT_API_KEY` is not provided, the app uses a local fallback prompt so the
+flow remains testable.
+
+Do not put production API keys into a GitHub Pages build. Static web builds
+expose `dart-define` values to the browser; use a backend proxy for public web
+deployments that need real text generation.
 
 ## Getting Started
 

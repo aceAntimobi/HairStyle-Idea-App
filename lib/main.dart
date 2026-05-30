@@ -534,14 +534,23 @@ class PromptResult {
 }
 
 class PromptService {
-  static const apiKey = String.fromEnvironment('DEEPSEEK_API_KEY');
+  static const apiKey = String.fromEnvironment(
+    'AI_TEXT_API_KEY',
+    defaultValue: String.fromEnvironment('DEEPSEEK_API_KEY'),
+  );
   static const baseUrl = String.fromEnvironment(
-    'DEEPSEEK_BASE_URL',
-    defaultValue: 'https://api.deepseek.com',
+    'AI_TEXT_BASE_URL',
+    defaultValue: String.fromEnvironment(
+      'DEEPSEEK_BASE_URL',
+      defaultValue: 'https://api.gptsapi.net/v1',
+    ),
   );
   static const model = String.fromEnvironment(
-    'DEEPSEEK_MODEL',
-    defaultValue: 'deepseek-chat',
+    'AI_TEXT_MODEL',
+    defaultValue: String.fromEnvironment(
+      'DEEPSEEK_MODEL',
+      defaultValue: 'gpt-4o-mini',
+    ),
   );
 
   Future<PromptResult> optimize({
@@ -557,7 +566,7 @@ class PromptService {
 
     try {
       final response = await http.post(
-        Uri.parse('$baseUrl/chat/completions'),
+        Uri.parse('${_normalizedBaseUrl()}/chat/completions'),
         headers: {
           'Authorization': 'Bearer $apiKey',
           'Content-Type': 'application/json',
@@ -604,12 +613,18 @@ class PromptService {
         prompt: map['prompt'] as String? ?? fallback.prompt,
         negativePrompt:
             map['negative_prompt'] as String? ?? fallback.negativePrompt,
-        provider: 'deepseek',
+        provider: 'openai-compatible',
         raw: content,
       );
     } catch (_) {
       return fallback;
     }
+  }
+
+  String _normalizedBaseUrl() {
+    return baseUrl.endsWith('/')
+        ? baseUrl.substring(0, baseUrl.length - 1)
+        : baseUrl;
   }
 
   String _extractJson(String input) {
@@ -847,7 +862,7 @@ class MockImageComposer {
     );
     _drawText(
       canvas,
-      'Seedream preview · DeepSeek prompt ready',
+      'Seedream preview · AI prompt ready',
       const Offset(90, 1321),
       23,
       Colors.white70,
@@ -1872,11 +1887,11 @@ class ProfileScreen extends StatelessWidget {
                 _SettingsTile(
                   icon: Icons.tune,
                   title: 'AI 接口状态',
-                  subtitle: 'DeepSeek + Seedream，可用 dart-define 配置',
+                  subtitle: 'OpenAI-compatible + Seedream，可用 dart-define 配置',
                   onTap: () => showInfoDialog(
                     context,
                     'AI 接口状态',
-                    'DEEPSEEK_API_KEY / SEEDREAM_API_KEY 未配置时会使用本地 fallback，流程仍可验收。',
+                    'AI_TEXT_API_KEY / SEEDREAM_API_KEY 未配置时会使用本地 fallback，流程仍可验收。',
                   ),
                 ),
               ],
@@ -2030,7 +2045,7 @@ class _HeroCanvas extends StatelessWidget {
                         const SizedBox(height: 12),
                         Text(
                           controller.status == GenerationStatus.optimizingPrompt
-                              ? 'DeepSeek 优化提示词'
+                              ? 'AI 优化提示词'
                               : 'Seedream 生成中',
                           style: const TextStyle(
                             color: Colors.white,
@@ -2133,7 +2148,7 @@ class _GeneratePanel extends StatelessWidget {
           Text(
             blocked
                 ? '需要会员或激励解锁。免费次数剩余 ${controller.remainingFreeGenerations}'
-                : 'DeepSeek 优化提示词，Seedream 生成结果。免费次数剩余 ${controller.remainingFreeGenerations}',
+                : 'AI 优化提示词，Seedream 生成结果。免费次数剩余 ${controller.remainingFreeGenerations}',
             style: const TextStyle(color: Colors.white70, height: 1.35),
           ),
           const SizedBox(height: 14),
@@ -2187,12 +2202,12 @@ class _StatusPanel extends StatelessWidget {
         controller.prompt == null) {
       return _InfoCard(
         title: '流程状态',
-        body: '选择照片和模板后即可生成。生成前会先用 DeepSeek 优化提示词，再调用 Seedream。',
+        body: '选择照片和模板后即可生成。生成前会先用 AI 文本接口优化提示词，再调用 Seedream。',
       );
     }
     final statusText = switch (controller.status) {
       GenerationStatus.idle => '待生成',
-      GenerationStatus.optimizingPrompt => 'DeepSeek 正在优化提示词',
+      GenerationStatus.optimizingPrompt => 'AI 正在优化提示词',
       GenerationStatus.generating => 'Seedream 正在生成图片',
       GenerationStatus.succeeded => '生成成功，可保存、分享或继续编辑',
       GenerationStatus.failed => '生成失败，可重试',
