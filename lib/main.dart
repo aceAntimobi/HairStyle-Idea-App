@@ -138,6 +138,10 @@ class RuntimeGenerationConfig {
     'DAILY_FREE_GENERATION_LIMIT',
     defaultValue: 3,
   );
+  static const configuredRemoteConfigEnabled = bool.fromEnvironment(
+    'FIREBASE_REMOTE_CONFIG_ENABLED',
+    defaultValue: false,
+  );
 
   factory RuntimeGenerationConfig.defaults() {
     return const RuntimeGenerationConfig(
@@ -174,6 +178,9 @@ class RuntimeConfigService {
 
   Future<RuntimeGenerationConfig> load() async {
     final defaults = RuntimeGenerationConfig.defaults();
+    if (!RuntimeGenerationConfig.configuredRemoteConfigEnabled) {
+      return defaults;
+    }
     try {
       await Firebase.initializeApp();
       final remoteConfig = FirebaseRemoteConfig.instance;
@@ -323,6 +330,12 @@ class AppController extends ChangeNotifier {
         const [];
   }
 
+  StyleTemplate? defaultTemplateFor(FeatureType feature) {
+    final templates = templatesFor(feature);
+    return templates.firstWhereOrNull((template) => !template.isPro) ??
+        templates.firstOrNull;
+  }
+
   Future<void> initialize() async {
     runtimeConfig = await const RuntimeConfigService().load();
     final prefs = await SharedPreferences.getInstance();
@@ -340,7 +353,7 @@ class AppController extends ChangeNotifier {
     history = await historyRepository.load();
     final defaultAsset = catalog!.defaultModel;
     await setSourceFromAsset(defaultAsset, label: '默认模特');
-    selectedTemplate = templatesFor(FeatureType.hairstyle).firstOrNull;
+    selectedTemplate = defaultTemplateFor(FeatureType.hairstyle);
     initialized = true;
     notifyListeners();
   }
@@ -358,7 +371,7 @@ class AppController extends ChangeNotifier {
 
   void setFeature(FeatureType feature) {
     activeFeature = feature;
-    selectedTemplate = templatesFor(feature).firstOrNull;
+    selectedTemplate = defaultTemplateFor(feature);
     resultBytes = null;
     resultLocalPath = null;
     prompt = null;
@@ -619,7 +632,7 @@ class AppController extends ChangeNotifier {
         templatesFor(
           activeFeature,
         ).firstWhereOrNull((t) => t.id == record.templateId) ??
-        templatesFor(activeFeature).firstOrNull;
+        defaultTemplateFor(activeFeature);
     prompt = record.prompt;
     negativePrompt = record.negativePrompt;
     tabIndex = 0;
@@ -783,44 +796,30 @@ class ObfuscatedSecrets {
     [160, 125, 87, 173, 65, 186, 124, 148, 209, 49],
     [56, 26, 235, 75, 5, 127],
   ];
-  static const _maskParts = ['hair', 'style', 'idea', 'seed', 'ream', 'v2'];
-  static const _maskYear = '2026';
+  static const _seedreamMaskChunks = [
+    [4, 131, 227, 69, 19, 36, 245, 84, 105, 0],
+    [210, 140, 101, 26, 211, 137, 126, 229, 143, 175],
+    [130, 124, 46, 83, 1, 207, 9, 209, 221, 192],
+    [150, 25, 99, 148, 117, 137, 79, 164, 178, 80],
+    [21, 121, 223, 47, 103, 25],
+  ];
 
   static String seedreamApiKey({String environmentKey = ''}) {
     if (environmentKey.isNotEmpty) {
       return environmentKey;
     }
-    return _decode(_seedreamCipherChunks);
+    return _decode(_seedreamCipherChunks, _seedreamMaskChunks);
   }
 
-  static String _decode(List<List<int>> chunks) {
+  static String _decode(List<List<int>> chunks, List<List<int>> maskChunks) {
     final cipher = chunks.expand((part) => part).toList(growable: false);
-    final mask = [..._maskParts, _maskYear].join('|');
-    var state = 0x6D2B79F5;
-    for (final unit in mask.codeUnits) {
-      state = _u32((state ^ unit) * 16777619);
-    }
+    final mask = maskChunks.expand((part) => part).toList(growable: false);
     final output = <int>[];
     for (var i = 0; i < cipher.length; i++) {
-      output.add(
-        cipher[i] ^
-            _nextMaskByte(i, () {
-              state = _u32(state + 0x6D2B79F5);
-              return state;
-            }),
-      );
+      output.add(cipher[i] ^ mask[i]);
     }
     return utf8.decode(output);
   }
-
-  static int _nextMaskByte(int index, int Function() nextState) {
-    var t = nextState();
-    t = _u32((t ^ (t >> 15)) * (t | 1));
-    t ^= _u32(t + _u32((t ^ (t >> 7)) * (t | 61)));
-    return ((t ^ (t >> 14)) ^ ((index * 31 + 17) & 0xff)) & 0xff;
-  }
-
-  static int _u32(int value) => value & 0xffffffff;
 }
 
 class GeneratedImageResult {
@@ -844,32 +843,40 @@ class ImageGenerationService {
     required PromptResult prompt,
     required RuntimeGenerationConfig config,
   }) async {
-    final apiKey = ObfuscatedSecrets.seedreamApiKey(
-      environmentKey: environmentApiKey,
-    );
-    if (config.realImageGenerationEnabled &&
-        apiKey.isNotEmpty &&
+    if (!kIsWeb &&
+        config.realImageGenerationEnabled &&
         config.seedreamBaseUrl.isNotEmpty) {
       try {
-        final response = await http.post(
-          Uri.parse(config.seedreamBaseUrl),
-          headers: {
-            'Authorization': 'Bearer $apiKey',
-            'Content-Type': 'application/json',
-          },
-          body: jsonEncode({
-            'model': config.seedreamModel,
-            'prompt': prompt.prompt,
-            'negative_prompt': prompt.negativePrompt,
-            'image': base64Encode(sourceBytes),
-            'size': '1024x1024',
-            'sequential_image_generation': 'disabled',
-            'stream': false,
-            'response_format': 'b64_json',
-            'watermark': false,
-            'metadata': {'feature': feature.key, 'template_id': template.id},
-          }),
+        final apiKey = ObfuscatedSecrets.seedreamApiKey(
+          environmentKey: environmentApiKey,
         );
+        if (apiKey.isEmpty) {
+          throw StateError('Seedream key is empty');
+        }
+        final response = await http
+            .post(
+              Uri.parse(config.seedreamBaseUrl),
+              headers: {
+                'Authorization': 'Bearer $apiKey',
+                'Content-Type': 'application/json',
+              },
+              body: jsonEncode({
+                'model': config.seedreamModel,
+                'prompt': prompt.prompt,
+                'negative_prompt': prompt.negativePrompt,
+                'image': base64Encode(sourceBytes),
+                'size': '1024x1024',
+                'sequential_image_generation': 'disabled',
+                'stream': false,
+                'response_format': 'b64_json',
+                'watermark': false,
+                'metadata': {
+                  'feature': feature.key,
+                  'template_id': template.id,
+                },
+              }),
+            )
+            .timeout(const Duration(seconds: 20));
         if (response.statusCode >= 200 && response.statusCode < 300) {
           final body = jsonDecode(response.body) as Map<String, dynamic>;
           final data = body['data'];
@@ -885,7 +892,9 @@ class ImageGenerationService {
               );
             }
             if (url != null) {
-              final imageResponse = await http.get(Uri.parse(url));
+              final imageResponse = await http
+                  .get(Uri.parse(url))
+                  .timeout(const Duration(seconds: 20));
               if (imageResponse.statusCode == 200) {
                 return GeneratedImageResult(
                   bytes: imageResponse.bodyBytes,

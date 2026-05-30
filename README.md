@@ -46,6 +46,10 @@ It is split into encrypted chunks and decoded at runtime, so the raw key is not
 stored in source files. This only raises the extraction cost; it is not equivalent
 to keeping the key on a server.
 
+GitHub Pages web builds do not call Seedream directly. They use the local image
+fallback because public static web apps cannot safely hide provider keys and are
+often blocked by CORS. Native mobile builds can use the embedded/compiled key.
+
 If Firebase is configured for the app, Remote Config can update public runtime
 controls without releasing a new build:
 
@@ -57,6 +61,14 @@ controls without releasing a new build:
 | `daily_free_generation_limit` | number | Initial free quota for non-members. |
 
 Do not put API keys in Firebase Remote Config.
+
+Remote Config is opt-in so builds without Firebase project files do not block
+startup:
+
+```sh
+flutter build web \
+  --dart-define=FIREBASE_REMOTE_CONFIG_ENABLED=true
+```
 
 For Android release builds, enable Dart obfuscation and keep split debug symbols
 outside the repository:
