@@ -15,7 +15,10 @@ flutter run \
 ```
 
 If `AI_TEXT_API_KEY` is not provided, the app uses a local fallback prompt so the
-flow remains testable.
+flow remains testable. The fallback prompt is feature-specific: hair color edits
+constrain the change to hair strands, hairstyle edits protect face and hairline
+identity, glasses edits align to eye and nose geometry, and background edits keep
+the subject boundary stable.
 
 Do not put production API keys into a GitHub Pages build. Static web builds
 expose `dart-define` values to the browser; use a backend proxy for public web
@@ -46,9 +49,11 @@ It is split into encrypted chunks and decoded at runtime, so the raw key is not
 stored in source files. This only raises the extraction cost; it is not equivalent
 to keeping the key on a server.
 
-GitHub Pages web builds do not call Seedream directly. They use the local image
-fallback because public static web apps cannot safely hide provider keys and are
-often blocked by CORS. Native mobile builds can use the embedded/compiled key.
+GitHub Pages web builds do not call Seedream directly. They use a clearly marked
+local preview fallback because public static web apps cannot safely hide provider
+keys and are often blocked by CORS. Native mobile builds call Seedream directly
+with the embedded/compiled key. If the Ark endpoint cannot be reached, native
+builds surface a real error instead of silently replacing the result with a mock.
 
 If Firebase is configured for the app, Remote Config can update public runtime
 controls without releasing a new build:

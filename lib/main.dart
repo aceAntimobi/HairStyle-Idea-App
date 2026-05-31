@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
@@ -692,40 +693,47 @@ class PromptService {
     }
 
     try {
-      final response = await http.post(
-        Uri.parse('${_normalizedBaseUrl()}/chat/completions'),
-        headers: {
-          'Authorization': 'Bearer $apiKey',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'model': model,
-          'messages': [
-            {
-              'role': 'system',
-              'content':
-                  'You optimize concise image generation prompts for a hairstyle and beauty try-on app. Return JSON only with prompt and negative_prompt.',
+      final response = await http
+          .post(
+            Uri.parse('${_normalizedBaseUrl()}/chat/completions'),
+            headers: {
+              'Authorization': 'Bearer $apiKey',
+              'Content-Type': 'application/json',
             },
-            {
-              'role': 'user',
-              'content': jsonEncode({
-                'feature': feature.title,
-                'template_title': template.title,
-                'template_tags': template.tags,
-                'prompt_hint': template.promptHint,
-                'source': sourceLabel,
-                'requirements': [
-                  'preserve face identity',
-                  'photorealistic',
-                  'mobile selfie app result',
-                  'no text in image',
-                ],
-              }),
-            },
-          ],
-          'temperature': 0.4,
-        }),
-      );
+            body: jsonEncode({
+              'model': model,
+              'messages': [
+                {
+                  'role': 'system',
+                  'content':
+                      'You are a senior prompt engineer for photorealistic portrait image editing. Return strict JSON only with "prompt" and "negative_prompt". The prompt must be specific, production-ready, and preserve the input person identity.',
+                },
+                {
+                  'role': 'user',
+                  'content': jsonEncode({
+                    'feature': feature.title,
+                    'template_title': template.title,
+                    'template_tags': template.tags,
+                    'prompt_hint': template.promptHint,
+                    'source': sourceLabel,
+                    'editing_policy': _featurePromptSpec(feature, template),
+                    'requirements': [
+                      'image-to-image edit of the provided portrait',
+                      'preserve face identity, pose, expression, skin tone, lighting, camera angle, and background unless the feature explicitly changes them',
+                      'commercial mobile beauty app quality',
+                      'natural hair strand detail and realistic boundaries',
+                      'no text, watermark, UI, logo, before-after labels, or extra people in the image',
+                      'prompt length 80 to 150 English words',
+                    ],
+                  }),
+                },
+              ],
+              'temperature': 0.25,
+              'max_tokens': 500,
+              'response_format': {'type': 'json_object'},
+            }),
+          )
+          .timeout(const Duration(seconds: 14));
       if (response.statusCode < 200 || response.statusCode >= 300) {
         return fallback;
       }
@@ -737,9 +745,14 @@ class PromptService {
       final jsonText = _extractJson(content);
       final map = jsonDecode(jsonText) as Map<String, dynamic>;
       return PromptResult(
-        prompt: map['prompt'] as String? ?? fallback.prompt,
-        negativePrompt:
-            map['negative_prompt'] as String? ?? fallback.negativePrompt,
+        prompt: _ensurePromptGuardrails(
+          map['prompt'] as String? ?? fallback.prompt,
+          feature,
+          template,
+        ),
+        negativePrompt: _ensureNegativeGuardrails(
+          map['negative_prompt'] as String? ?? fallback.negativePrompt,
+        ),
         provider: 'openai-compatible',
         raw: content,
       );
@@ -772,19 +785,91 @@ class PromptService {
     String sourceLabel,
   ) {
     final prompt = [
-      'Photorealistic mobile beauty app output.',
-      'Preserve the person identity, face shape, skin tone and natural lighting.',
+      'Photorealistic image-to-image portrait edit for a premium mobile beauty app.',
+      'Use the provided portrait as the only reference image.',
+      'Preserve the same person identity, face shape, expression, pose, skin tone, camera angle, lighting, outfit, and background unless the requested feature explicitly changes them.',
       'Apply ${feature.title}: ${template.title}.',
-      template.promptHint,
-      'Clean salon-quality result, realistic hair strands, no text, no watermark.',
+      _featurePromptSpec(feature, template),
+      'Blend the edit naturally into the original image with clean salon-quality detail, realistic texture, accurate shadows, and no visible mask edges.',
+      'No text, watermark, logo, UI elements, extra people, or before-after layout.',
     ].join(' ');
     return PromptResult(
       prompt: prompt,
-      negativePrompt:
-          'distorted face, changed identity, extra face, bad anatomy, low resolution, artifacts, watermark, text, logo',
+      negativePrompt: _ensureNegativeGuardrails(
+        'changed identity, different face, distorted face, deformed eyes, asymmetric features, extra face, extra person, bad anatomy, extra limbs, plastic skin, over-smoothed skin, color bleeding, messy hair mask, harsh cutout edges, low resolution, blurry, jpeg artifacts, watermark, text, logo, UI, frame, collage',
+      ),
       provider: 'local-fallback',
       raw: prompt,
     );
+  }
+
+  String _featurePromptSpec(FeatureType feature, StyleTemplate template) {
+    return switch (feature) {
+      FeatureType.hairstyle =>
+        'Replace only the hairstyle with ${template.title}. Keep the forehead, ears, jawline, shoulders, clothes, and background stable. Create a believable hairline, layered strands, natural volume, realistic flyaway hairs, and coherent highlights. ${template.promptHint}.',
+      FeatureType.color =>
+        'Recolor only the visible hair strands to ${template.title}. Preserve the haircut shape, hair texture, roots, shine, shadows, skin, face, clothing, jewelry, and background. Avoid color spill onto skin, veil, clothes, or accessories. ${template.promptHint}.',
+      FeatureType.glasses =>
+        'Add realistic ${template.title} eyewear aligned to the eyes and nose bridge. Preserve facial identity and expression. Match lens perspective, temple arms, reflections, contact shadows, and face proportions. Do not cover eyebrows unnaturally. ${template.promptHint}.',
+      FeatureType.age =>
+        'Adjust apparent age toward ${template.title} while preserving identity, face structure, expression, hairstyle silhouette, outfit, lighting, and background. Keep the result elegant and believable, not caricatured. ${template.promptHint}.',
+      FeatureType.gender =>
+        'Shift styling toward ${template.title} while preserving identity, face geometry, pose, outfit realism, lighting, and background. Keep it tasteful, natural, and non-caricatured. ${template.promptHint}.',
+      FeatureType.beauty =>
+        'Apply ${template.title} beauty retouching with natural skin texture, balanced makeup, realistic lips, clean eyelashes, and controlled highlights. Preserve identity and avoid over-processing. ${template.promptHint}.',
+      FeatureType.faceSwap =>
+        'Blend the source face identity into the selected portrait style while preserving realistic head pose, skin tone continuity, facial proportions, lighting, and camera perspective. ${template.promptHint}.',
+      FeatureType.cartoon =>
+        'Transform the portrait into ${template.title} while preserving recognizable identity, pose, expression, hair silhouette, and main color relationships. Keep clean avatar-quality details. ${template.promptHint}.',
+      FeatureType.background =>
+        'Replace or enhance only the background with ${template.title}. Preserve the person, hair boundary, clothes, pose, and lighting direction. Add realistic depth, shadows, and color harmony. ${template.promptHint}.',
+    };
+  }
+
+  String _ensurePromptGuardrails(
+    String prompt,
+    FeatureType feature,
+    StyleTemplate template,
+  ) {
+    final trimmed = prompt.trim();
+    final guardrails =
+        ' Use the provided image as the source portrait. Preserve identity, face, pose, lighting, and background unless explicitly requested. Apply ${feature.title}: ${template.title}. No text, watermark, logo, UI, extra people, or collage.';
+    if (trimmed.isEmpty) {
+      return _fallbackPrompt(feature, template, '默认模特').prompt;
+    }
+    return trimmed.contains('Preserve identity') ||
+            trimmed.contains('preserve identity')
+        ? '$trimmed No text, watermark, logo, UI, extra people, or collage.'
+        : '$trimmed$guardrails';
+  }
+
+  String _ensureNegativeGuardrails(String negativePrompt) {
+    final required = [
+      'changed identity',
+      'different face',
+      'distorted face',
+      'extra person',
+      'bad anatomy',
+      'color bleeding',
+      'mask edges',
+      'low quality',
+      'blurry',
+      'watermark',
+      'text',
+      'logo',
+      'UI',
+    ];
+    final parts = negativePrompt
+        .split(',')
+        .map((part) => part.trim())
+        .where((part) => part.isNotEmpty)
+        .toList();
+    for (final item in required) {
+      if (!parts.any((part) => part.toLowerCase() == item.toLowerCase())) {
+        parts.add(item);
+      }
+    }
+    return parts.join(', ');
   }
 }
 
@@ -833,6 +918,15 @@ class GeneratedImageResult {
   final String? remoteUrl;
 }
 
+class ImageGenerationException implements Exception {
+  ImageGenerationException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 class ImageGenerationService {
   static const environmentApiKey = String.fromEnvironment('SEEDREAM_API_KEY');
 
@@ -843,6 +937,15 @@ class ImageGenerationService {
     required PromptResult prompt,
     required RuntimeGenerationConfig config,
   }) async {
+    if (kIsWeb || !config.realImageGenerationEnabled) {
+      return _generateLocalFallback(
+        sourceBytes: sourceBytes,
+        feature: feature,
+        template: template,
+        prompt: prompt,
+      );
+    }
+
     if (!kIsWeb &&
         config.realImageGenerationEnabled &&
         config.seedreamBaseUrl.isNotEmpty) {
@@ -853,6 +956,24 @@ class ImageGenerationService {
         if (apiKey.isEmpty) {
           throw StateError('Seedream key is empty');
         }
+        final requestBody = {
+          'model': config.seedreamModel,
+          'prompt': prompt.prompt,
+          'negative_prompt': prompt.negativePrompt,
+          'image': _dataUriFor(sourceBytes),
+          'size': '1024x1024',
+          'sequential_image_generation': 'disabled',
+          'stream': false,
+          'response_format': 'url',
+          'output_format': 'png',
+          'watermark': false,
+          'optimize_prompt_options': {'mode': 'standard'},
+          'metadata': {
+            'feature': feature.key,
+            'template_id': template.id,
+            'prompt_provider': prompt.provider,
+          },
+        };
         final response = await http
             .post(
               Uri.parse(config.seedreamBaseUrl),
@@ -860,56 +981,28 @@ class ImageGenerationService {
                 'Authorization': 'Bearer $apiKey',
                 'Content-Type': 'application/json',
               },
-              body: jsonEncode({
-                'model': config.seedreamModel,
-                'prompt': prompt.prompt,
-                'negative_prompt': prompt.negativePrompt,
-                'image': base64Encode(sourceBytes),
-                'size': '1024x1024',
-                'sequential_image_generation': 'disabled',
-                'stream': false,
-                'response_format': 'b64_json',
-                'watermark': false,
-                'metadata': {
-                  'feature': feature.key,
-                  'template_id': template.id,
-                },
-              }),
+              body: jsonEncode(requestBody),
             )
-            .timeout(const Duration(seconds: 20));
+            .timeout(const Duration(seconds: 90));
         if (response.statusCode >= 200 && response.statusCode < 300) {
           final body = jsonDecode(response.body) as Map<String, dynamic>;
-          final data = body['data'];
-          if (data is List && data.isNotEmpty) {
-            final item = data.first as Map<String, dynamic>;
-            final b64 = item['b64_json'] as String?;
-            final url = item['url'] as String?;
-            if (b64 != null) {
-              return GeneratedImageResult(
-                bytes: base64Decode(b64),
-                provider: 'seedream',
-                remoteUrl: url,
-              );
-            }
-            if (url != null) {
-              final imageResponse = await http
-                  .get(Uri.parse(url))
-                  .timeout(const Duration(seconds: 20));
-              if (imageResponse.statusCode == 200) {
-                return GeneratedImageResult(
-                  bytes: imageResponse.bodyBytes,
-                  provider: 'seedream',
-                  remoteUrl: url,
-                );
-              }
-            }
-          }
+          return await _parseSeedreamImage(body);
         }
-      } catch (_) {
-        // Fall through to local deterministic mock so the product flow stays usable in debug builds.
+        throw ImageGenerationException(_responseError(response));
+      } catch (e) {
+        throw ImageGenerationException(_friendlyFailure(e));
       }
     }
 
+    throw ImageGenerationException('Seedream 生图未配置 endpoint');
+  }
+
+  Future<GeneratedImageResult> _generateLocalFallback({
+    required Uint8List sourceBytes,
+    required FeatureType feature,
+    required StyleTemplate template,
+    required PromptResult prompt,
+  }) async {
     await Future<void>.delayed(const Duration(milliseconds: 900));
     final bytes = await MockImageComposer.compose(
       sourceBytes: sourceBytes,
@@ -921,6 +1014,128 @@ class ImageGenerationService {
       bytes: bytes,
       provider: 'local-seedream-fallback',
     );
+  }
+
+  Future<GeneratedImageResult> _parseSeedreamImage(
+    Map<String, dynamic> body,
+  ) async {
+    final data = body['data'];
+    if (data is! List || data.isEmpty) {
+      throw ImageGenerationException('Seedream 返回为空：未找到 data[0]');
+    }
+    final item = data.first;
+    if (item is! Map<String, dynamic>) {
+      throw ImageGenerationException('Seedream 返回格式异常：data[0] 不是对象');
+    }
+    final b64 = item['b64_json'] as String?;
+    final url = item['url'] as String?;
+    if (b64 != null && b64.isNotEmpty) {
+      return GeneratedImageResult(
+        bytes: base64Decode(_stripDataUriPrefix(b64)),
+        provider: 'seedream',
+        remoteUrl: url,
+      );
+    }
+    if (url != null && url.isNotEmpty) {
+      final imageResponse = await http
+          .get(Uri.parse(url))
+          .timeout(const Duration(seconds: 45));
+      if (imageResponse.statusCode == 200) {
+        return GeneratedImageResult(
+          bytes: imageResponse.bodyBytes,
+          provider: 'seedream',
+          remoteUrl: url,
+        );
+      }
+      throw ImageGenerationException(
+        'Seedream 图片下载失败：HTTP ${imageResponse.statusCode}',
+      );
+    }
+    throw ImageGenerationException('Seedream 返回中没有 url 或 b64_json');
+  }
+
+  String _responseError(http.Response response) {
+    try {
+      final body = jsonDecode(response.body);
+      if (body is Map<String, dynamic>) {
+        final error = body['error'];
+        if (error is Map<String, dynamic>) {
+          final code = error['code']?.toString();
+          final message = error['message']?.toString();
+          return 'Seedream 生图失败：HTTP ${response.statusCode}'
+              '${code == null ? '' : ' / $code'}'
+              '${message == null ? '' : ' / $message'}';
+        }
+        final message = body['message']?.toString();
+        if (message != null && message.isNotEmpty) {
+          return 'Seedream 生图失败：HTTP ${response.statusCode} / $message';
+        }
+      }
+    } catch (_) {
+      // Fall through to the raw status message below.
+    }
+    return 'Seedream 生图失败：HTTP ${response.statusCode}';
+  }
+
+  String _friendlyFailure(Object error) {
+    final text = error.toString();
+    if (error is TimeoutException || text.contains('TimeoutException')) {
+      return 'Seedream 生图超时：当前网络到 Ark 接口连接过慢或不可达，请切换网络后重试';
+    }
+    if (text.contains('HandshakeException') ||
+        text.contains('SSL') ||
+        text.contains('handshake')) {
+      return 'Seedream 生图失败：当前网络无法完成 Ark HTTPS 握手，请切换网络后重试';
+    }
+    if (text.contains('SocketException') ||
+        text.contains('Connection') ||
+        text.contains('Failed host lookup')) {
+      return 'Seedream 生图失败：无法连接 Ark 服务，请检查网络后重试';
+    }
+    if (error is ImageGenerationException) {
+      return error.message;
+    }
+    return 'Seedream 生图失败：$text';
+  }
+
+  String _dataUriFor(Uint8List bytes) {
+    return 'data:${_mimeType(bytes)};base64,${base64Encode(bytes)}';
+  }
+
+  String _mimeType(Uint8List bytes) {
+    if (bytes.length >= 4 &&
+        bytes[0] == 0x89 &&
+        bytes[1] == 0x50 &&
+        bytes[2] == 0x4E &&
+        bytes[3] == 0x47) {
+      return 'image/png';
+    }
+    if (bytes.length >= 3 &&
+        bytes[0] == 0xFF &&
+        bytes[1] == 0xD8 &&
+        bytes[2] == 0xFF) {
+      return 'image/jpeg';
+    }
+    if (bytes.length >= 12 &&
+        bytes[0] == 0x52 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x46 &&
+        bytes[8] == 0x57 &&
+        bytes[9] == 0x45 &&
+        bytes[10] == 0x42 &&
+        bytes[11] == 0x50) {
+      return 'image/webp';
+    }
+    return 'image/jpeg';
+  }
+
+  String _stripDataUriPrefix(String value) {
+    final comma = value.indexOf(',');
+    if (value.startsWith('data:') && comma > 0) {
+      return value.substring(comma + 1);
+    }
+    return value;
   }
 }
 
@@ -1037,7 +1252,7 @@ class MockImageComposer {
     );
     _drawText(
       canvas,
-      'Seedream preview · AI prompt ready',
+      'Local preview · AI prompt ready',
       const Offset(90, 1321),
       23,
       Colors.white70,
